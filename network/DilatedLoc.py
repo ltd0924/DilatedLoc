@@ -67,13 +67,12 @@ class OutnetCoordConv(nn.Module):
 
 
 class LocalizationCNN(nn.Module):
-    def __init__(self, dilation_flag, local_context, feature=64):
+    def __init__(self, dilation_flag, local_context, thread = 0.3, feature=64):
         super(LocalizationCNN, self).__init__()
         self.norm = nn.BatchNorm2d(num_features=1, affine=True)
         self.layer1 = Conv2DReLUBN(1, feature, 3, 1, 1)  # replace Conv2d
-        self.layer2 = Conv2DReLUBN(feature+1, feature, 3, 1, 1)
-
-        self.layer3 = Conv2DReLUBN(feature + 1, feature, 3, 1, 1)
+        self.layer2 = Conv2DReLUBN(feature+1, feature, 3,  (2, 2), (2, 2))
+        self.layer3 = Conv2DReLUBN(feature , feature, 3, 1, 1)
         self.local = local_context
         if dilation_flag:
             if local_context:
@@ -82,9 +81,9 @@ class LocalizationCNN(nn.Module):
                 self.layer4 = Conv2DReLUBN(feature + 1, feature, 3, (2, 2), (2, 2))  # k' = (k+1)*(dilation-1)+k
 
             self.layer5 = Conv2DReLUBN(feature + 1, feature, 3, (4, 4), (4, 4))  # padding' = 2*padding-1
-            self.layer6 = Conv2DReLUBN(feature + 1, feature, 3, (8, 8), (8, 8))
-            self.layer7 = Conv2DReLUBN(feature + 1, feature, 3, (16, 16), (16, 16))
-            self.layer71 = Conv2DReLUBN(feature + 1, feature, 3, (16, 16), (16, 16))
+            self.layer6 = Conv2DReLUBN(feature , feature, 3, (8, 8), (8, 8))
+            self.layer7 = Conv2DReLUBN(feature , feature, 3, (16, 16), (16, 16))
+
 
         else:
             self.layer4 = Conv2DReLUBN(feature + 1, feature, 3, 1, 1)
@@ -92,19 +91,23 @@ class LocalizationCNN(nn.Module):
             self.layer6 = Conv2DReLUBN(feature + 1, feature, 3, 1, 1)
             self.layer7 = Conv2DReLUBN(feature + 1, feature, 3, 1, 1)
 
-        self.deconv1 = Conv2DReLUBN(feature + 1, feature, kernel_size=3, padding=1, dilation=1)
-        self.layerU1 = Conv2DReLUBN(feature, feature, kernel_size=3, stride=1,padding=1,dilation=1)
-        self.layerU2 = Conv2DReLUBN(feature, feature*2 , kernel_size=3, stride=1, padding=1,dilation=1)
-        self.layerU3 = Conv2DReLUBN(feature*2, feature*2, kernel_size=3, stride=1,padding=1,dilation=1)
-        self.layerD3 = Conv2DReLUBN(feature*2, feature, kernel_size=3, padding=1,dilation=1)
-        self.layerD2 = Conv2DReLUBN(feature*2, feature, kernel_size=3, padding=1,dilation=1)
-        self.layerD1 = Conv2DReLUBN(feature, feature, kernel_size=3, padding=1,dilation=1)
-        self.norm1 = nn.BatchNorm2d(num_features=feature*2, affine=True)
+        self.deconv1 = Conv2DReLUBN(feature, feature, 3, 1, 1)  # replace Conv2d
+        self.deconv2 = Conv2DReLUBN(feature, feature, 3, 1, 1)
+        self.layerU1 = Conv2DReLUBN(feature, feature, kernel_size=3, stride=1, padding=1, dilation=1)
+        self.layerU2 = Conv2DReLUBN(feature, feature * 2, kernel_size=3, stride=1, padding=1, dilation=1)
+        self.layerU3 = Conv2DReLUBN(feature * 2, feature * 2, kernel_size=3, stride=1, padding=1, dilation=1)
+        self.layerD3 = Conv2DReLUBN(feature * 2, feature, kernel_size=3, padding=1, dilation=1)
+        self.layerD2 = Conv2DReLUBN(feature * 2, feature, kernel_size=3, padding=1, dilation=1)
+        self.layerD1 = Conv2DReLUBN(feature, feature, kernel_size=3, padding=1, dilation=1)
 
 
+        diag = 0
         self.p_Conv = nn.Conv2d(1, 1, kernel_size=3, padding=1)
+        self.p_Conv.bias = None
+        self.p_Conv.training = False
+        self.p_Conv.weight.data = torch.Tensor([[[[diag, 1, diag], [1, 1, 1], [diag, 1, diag]]]])
         self.pool = nn.AvgPool2d(2,stride=2)
-        self.pred = OutnetCoordConv(feature, 1, 3)
+        self.pred = OutnetConv(feature, 1, 3)
 
 
 
@@ -122,8 +125,9 @@ class LocalizationCNN(nn.Module):
         out = self.layer1(out)
         features = torch.cat((out, im), 1)
         out = self.layer2(features) + out
-        features = torch.cat((out, im), 1)
-        out = self.layer3(features) + out
+        # features = torch.cat((out, im), 1)
+        features = out
+        out1 = self.layer3(features) + out
         if self.local:
             if test:
                 zeros = torch.zeros_like(out[:1])
@@ -141,28 +145,33 @@ class LocalizationCNN(nn.Module):
                 out4 = self.layer4(features) + out[[1, 4, 7, 10, 13, 16, 19, 22, 25, 28], :, :, :]
 
         else:
-            features = torch.cat((out, im), 1)
-            out4 = self.layer4(features) + out
+            features = torch.cat((out1, im), 1)
+            out3 = self.layer32(features) + out1
+            features = torch.cat((out3, im), 1)
+            out4 = self.layer4(features) + out3
 
         features = torch.cat((out4, img_curr), 1)
         out = self.layer5(features) + out4
-        features = torch.cat((out, img_curr), 1)
-        out6 = self.layer6(features) + out
-        features = torch.cat((out6, img_curr), 1)
-        out = self.layer7(features) + out4 + out6
-        features = torch.cat((out, img_curr), 1)
+        features = out
+        out6 = self.layer6(features) + out3
+        features = out6
+        # features = torch.cat((out6, img_curr), 1)
+        out2 = self.layer7(features) + out4 + out6
+        # features = torch.cat((out, img_curr), 1)
+        features = out2
 
-        out1 = self.deconv1(features)
-        out=self.pool(out1)
-
-        out = self.layerU1(out)
+        out = self.deconv1(features)
+        out = self.deconv2(out)
+        out = self.deconv3(out)
+        features = torch.cat((out1,out2,out),1)
+        out = self.layerU1(features)
         out = self.layerU2(out)
         out = self.layerU3(out)
         out = interpolate(out, scale_factor=2)
         out = self.layerD3(out)
         out = torch.cat([out,out1],1)
-        out = self.layerD2(out)
         out = self.layerD1(out)
+        out = self.layerD2(out)
 
         out = self.pred(out)
         probs = torch.sigmoid(torch.clamp(out['p'], -16., 16.))
@@ -174,7 +183,6 @@ class LocalizationCNN(nn.Module):
         xyzi_sig = torch.sigmoid(out['xyzi_sig']) + 0.001
         p = probs[:, 0]
         if test:
-            diag = 0
             p_clip = torch.where(p > 0.3, p, torch.zeros_like(p))[:, None]
 
             # localize maximum values within a 3x3 patch
@@ -183,11 +191,8 @@ class LocalizationCNN(nn.Module):
             max_mask1 = torch.eq(p[:, None], pool).float()
 
             # Add probability values from the 4 adjacent pixels
-
-
             conv = self.p_Conv(p[:, None])
             p_ps1 = max_mask1 * conv
-
             # In order do be able to identify two fluorophores in adjacent pixels we look for probablity values > 0.6 that are not part of the first mask
 
             p_copy = p * (1 - max_mask1[:, 0])
